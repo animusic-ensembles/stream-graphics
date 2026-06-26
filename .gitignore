@@ -1,0 +1,7 @@
+/csv
+/.venv
+/.agents
+/__pycache__
+/**/__pycache__
+/media
+/output
