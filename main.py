@@ -11,7 +11,11 @@ import lower_thirds.app as LowerThirds
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 OUTPUT_FOLDER = PROJECT_ROOT / 'output'
-BAR_WIDTH = 30
+BAR_WIDTH = 36
+BAR_FILLED = '█'
+BAR_EMPTY = '░'
+ASCII_BAR_FILLED = '='
+ASCII_BAR_EMPTY = '-'
 
 
 def _clean_dropped_path(value: str) -> Path:
@@ -39,12 +43,16 @@ def _open_folder(path: Path) -> None:
 
 
 def _make_progress_bar(label: str) -> Callable[[int, int], None]:
+    encoding = sys.stdout.encoding or ''
+    filled_char = BAR_FILLED if encoding.lower().startswith('utf') else ASCII_BAR_FILLED
+    empty_char = BAR_EMPTY if encoding.lower().startswith('utf') else ASCII_BAR_EMPTY
+
     def update(current: int, total: int) -> None:
         percent = 100 if total == 0 else round((current / total) * 100)
         filled = BAR_WIDTH if total == 0 else round((current / total) * BAR_WIDTH)
-        bar = '#' * filled + '-' * (BAR_WIDTH - filled)
+        bar = filled_char * filled + empty_char * (BAR_WIDTH - filled)
         end = '\n' if current >= total else ''
-        print(f'\r{label}: [{bar}] {percent:3d}%', end=end, flush=True)
+        print(f'\r{label:<13} {bar} {percent:3d}%', end=end, flush=True)
 
     return update
 
