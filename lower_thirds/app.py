@@ -5,7 +5,7 @@ from manim.typing import Point3DLike
 from pathlib import Path
 import shutil
 import re
-from typing import Any, TypeVar, cast
+from typing import Any, Callable, TypeVar, cast
 
 T = TypeVar("T", bound=Mobject)
 
@@ -63,6 +63,8 @@ def _configure_manim_output() -> None:
     manim_config.save_sections = True
     manim_config.quality = 'high_quality'
     manim_config.media_dir = str(temp_folder)
+    manim_config.verbosity = 'ERROR'
+    manim_config.progress_bar = 'none'
 
 
 def _copy_sections_to_output() -> None:
@@ -83,10 +85,28 @@ class LowerThird(Scene):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.setlist: list[tuple[str, str]] = []
+        self.progress_callback: Callable[[int, int], None] | None = None
+        self.progress_current = 0
+        self.progress_total = 0
 
 
-    def initialize(self, setlist: list[tuple[str, str]]) -> None:
+    def initialize(
+            self,
+            setlist: list[tuple[str, str]],
+            progress_callback: Callable[[int, int], None] | None = None
+    ) -> None:
         self.setlist = setlist
+        self.progress_callback = progress_callback
+        self.progress_current = 0
+        self.progress_total = len(setlist) * 5 + 1
+
+
+    def _mark_progress(self) -> None:
+        if not self.progress_callback:
+            return
+
+        self.progress_current += 1
+        self.progress_callback(self.progress_current, self.progress_total)
 
 
     def construct(self) -> None:
@@ -117,11 +137,14 @@ class LowerThird(Scene):
 
         self.add(line)
         self.play(MoveToTarget(line))
+        self._mark_progress()
         self.add(title)
         self.add(subtitle)
         self.add(overlay)
         self.play(MoveToTarget(title), MoveToTarget(subtitle))
+        self._mark_progress()
         self.wait(2)
+        self._mark_progress()
 
         title_target = _make_target(title)
         title_target.set_fill(opacity=0)
@@ -132,15 +155,19 @@ class LowerThird(Scene):
         line_target = _make_target(line)
         line_target.put_start_and_end_on(_convert(100, 900), _convert(100, 900))
         self.play(MoveToTarget(title), MoveToTarget(subtitle))
+        self._mark_progress()
         self.play(MoveToTarget(line))
+        self._mark_progress()
 
 
-def generate(setlist: list[tuple[str, str]]) -> None:
+def generate(setlist: list[tuple[str, str]], progress_callback: Callable[[int, int], None] | None = None) -> None:
     _configure_manim_output()
     _clear_old_videos()
     lower_thirds = LowerThird()
-    lower_thirds.initialize(setlist)
+    lower_thirds.initialize(setlist, progress_callback)
     lower_thirds.render()
+    if progress_callback:
+        progress_callback(lower_thirds.progress_total, lower_thirds.progress_total)
     _copy_sections_to_output()
 
     print('All lower thirds generated successfully.')
