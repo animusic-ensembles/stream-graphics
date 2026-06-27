@@ -26,6 +26,28 @@ You can also pass the CSV path directly:
 sh start.sh path/to/credits.csv
 ```
 
+## Options
+
+If you do not pass an option, the app shows a menu where you can choose what to generate.
+
+Use these options to skip the menu:
+
+Windows:
+
+```bat
+start.bat path\to\credits.csv --all
+start.bat path\to\credits.csv --credits
+start.bat path\to\credits.csv --lowerthirds
+```
+
+macOS / Linux:
+
+```sh
+sh start.sh path/to/credits.csv --all
+sh start.sh path/to/credits.csv --credits
+sh start.sh path/to/credits.csv --lowerthirds
+```
+
 ## Output
 
 When generation finishes, the app opens the `output` folder.

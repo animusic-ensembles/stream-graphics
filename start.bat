@@ -30,10 +30,6 @@ python -m pip install -r requirements.txt
 
 cls
 
-if "%~1"=="" (
-    python main.py
-) else (
-    python main.py "%~1"
-)
+python main.py %*
 
 pause
