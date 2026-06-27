@@ -25,4 +25,4 @@ python -m pip install -r requirements.txt
 
 clear
 
-python main.py "$@"
+exec python main.py "$@"

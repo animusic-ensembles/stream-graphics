@@ -1,11 +1,16 @@
 from pathlib import Path
 import argparse
+import contextlib
 import importlib
 import os
 import platform
+import queue
+import re
 import subprocess
 import sys
-from typing import Callable
+import threading
+import time
+from typing import Callable, Iterator
 
 import credits.app as Credits
 import lower_thirds.app as LowerThirds
@@ -13,16 +18,24 @@ import lower_thirds.app as LowerThirds
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 OUTPUT_FOLDER = PROJECT_ROOT / 'output'
+CREDITS_OUTPUT_FOLDER = OUTPUT_FOLDER / 'credits'
+LOWER_THIRDS_OUTPUT_FOLDER = OUTPUT_FOLDER / 'lower_thirds'
 BAR_WIDTH = 36
+BOX_WIDTH = 78
+LOG_LINES = 8
+PROGRESS_PREFIX = '__PROGRESS__'
+
 BAR_FILLED = '\u2588'
 BAR_EMPTY = '\u2591'
 ASCII_BAR_FILLED = '='
 ASCII_BAR_EMPTY = '-'
+
 COLOR_RESET = '\033[0m'
 COLOR_DIM = '\033[2m'
 COLOR_CYAN = '\033[36m'
 COLOR_GREEN = '\033[32m'
 COLOR_YELLOW = '\033[33m'
+ANSI_RE = re.compile(r'\033\[[0-9;?]*[A-Za-z]')
 
 TASK_CREDITS = 'credits'
 TASK_LOWER_THIRDS = 'lower_thirds'
@@ -48,6 +61,7 @@ def _parse_args() -> argparse.Namespace:
         action='store_true',
         help='Generate lower-third videos only.'
     )
+    parser.add_argument('--worker', action='store_true', help=argparse.SUPPRESS)
     return parser.parse_args()
 
 
@@ -75,24 +89,12 @@ def _open_folder(path: Path) -> None:
         print(f'Open it manually here: {path}')
 
 
-def _make_progress_bar(label: str) -> Callable[[int, int], None]:
-    filled_char = BAR_FILLED if _supports_unicode() else ASCII_BAR_FILLED
-    empty_char = BAR_EMPTY if _supports_unicode() else ASCII_BAR_EMPTY
-
-    def update(current: int, total: int) -> None:
-        percent = 100 if total == 0 else round((current / total) * 100)
-        filled = BAR_WIDTH if total == 0 else round((current / total) * BAR_WIDTH)
-        bar = filled_char * filled + empty_char * (BAR_WIDTH - filled)
-        end = '\n' if current >= total else ''
-        if _supports_color():
-            label_text = f'{COLOR_CYAN}{label:<13}{COLOR_RESET}'
-            bar_text = f'{COLOR_GREEN}{filled_char * filled}{COLOR_DIM}{empty_char * (BAR_WIDTH - filled)}{COLOR_RESET}'
-            percent_text = f'{COLOR_YELLOW}{percent:3d}%{COLOR_RESET}'
-            print(f'\r{label_text} {bar_text} {percent_text}', end=end, flush=True)
-        else:
-            print(f'\r{label:<13} {bar} {percent:3d}%', end=end, flush=True)
-
-    return update
+def _output_folder_for_tasks(selected_tasks: set[str]) -> Path:
+    if selected_tasks == {TASK_CREDITS}:
+        return CREDITS_OUTPUT_FOLDER
+    if selected_tasks == {TASK_LOWER_THIRDS}:
+        return LOWER_THIRDS_OUTPUT_FOLDER
+    return OUTPUT_FOLDER
 
 
 def _supports_unicode() -> bool:
@@ -115,7 +117,47 @@ def _color(text: str, color: str) -> str:
 
 
 def _clear_terminal() -> None:
-    os.system('cls' if platform.system() == 'Windows' else 'clear')
+    if not sys.stdout.isatty():
+        return
+    print('\033[2J\033[H', end='', flush=True)
+
+
+def _move_cursor_home() -> None:
+    if not sys.stdout.isatty():
+        return
+    print('\033[H', end='', flush=True)
+
+
+def _hide_cursor() -> None:
+    if sys.stdout.isatty():
+        print('\033[?25l', end='', flush=True)
+
+
+def _show_cursor() -> None:
+    if sys.stdout.isatty():
+        print('\033[?25h', end='', flush=True)
+
+
+def _bar(current: int, total: int) -> tuple[str, int]:
+    filled_char = BAR_FILLED if _supports_unicode() else ASCII_BAR_FILLED
+    empty_char = BAR_EMPTY if _supports_unicode() else ASCII_BAR_EMPTY
+    percent = 100 if total == 0 else round((current / total) * 100)
+    filled = BAR_WIDTH if total == 0 else round((current / total) * BAR_WIDTH)
+    bar = filled_char * filled + empty_char * (BAR_WIDTH - filled)
+    return bar, percent
+
+
+def _color_bar(bar: str, percent: int) -> str:
+    if not _supports_color():
+        return f'{bar} {percent:3d}%'
+
+    filled_char = BAR_FILLED if _supports_unicode() else ASCII_BAR_FILLED
+    filled_count = bar.count(filled_char)
+    filled = bar[:filled_count]
+    empty = bar[filled_count:]
+    bar_text = f'{COLOR_GREEN}{filled}{COLOR_DIM}{empty}{COLOR_RESET}'
+    percent_text = f'{COLOR_YELLOW}{percent:3d}%{COLOR_RESET}'
+    return f'{bar_text} {percent_text}'
 
 
 def _read_menu_key() -> str:
@@ -134,6 +176,8 @@ def _read_menu_key() -> str:
             return 'enter'
         if key == ' ':
             return 'space'
+        if key == '\x1b':
+            return 'esc'
         return key.lower()
 
     termios = importlib.import_module('termios')
@@ -150,12 +194,49 @@ def _read_menu_key() -> str:
                 return 'up'
             if sequence == '[B':
                 return 'down'
-            return ''
+            return 'esc'
         if key in ('\r', '\n'):
             return 'enter'
         if key == ' ':
             return 'space'
         return key.lower()
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+
+def _poll_key() -> str | None:
+    if platform.system() == 'Windows':
+        msvcrt = importlib.import_module('msvcrt')
+        if not msvcrt.kbhit():
+            return None
+        key = msvcrt.getwch()
+        if key == '\x1b':
+            return 'esc'
+        return key.lower()
+
+    select = importlib.import_module('select')
+    readable, _, _ = select.select([sys.stdin], [], [], 0)
+    if not readable:
+        return None
+    key = sys.stdin.read(1)
+    if key == '\x1b':
+        return 'esc'
+    return key.lower()
+
+
+@contextlib.contextmanager
+def _raw_terminal() -> Iterator[None]:
+    if platform.system() == 'Windows' or not sys.stdin.isatty():
+        yield
+        return
+
+    termios = importlib.import_module('termios')
+    tty = importlib.import_module('tty')
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        yield
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
@@ -171,13 +252,12 @@ def _choose_tasks_from_menu() -> set[str]:
         selected_symbol = '\u25cf' if _supports_unicode() else 'x'
         unselected_symbol = '\u25cb' if _supports_unicode() else '-'
         pointer_symbol = '\u203a' if _supports_unicode() else '>'
-        pointer_empty = ' '
         up_down = '\u2191/\u2193' if _supports_unicode() else 'up/down'
 
         print(_color('Select what to generate', COLOR_CYAN))
         print()
         for index, (task_id, label) in enumerate(TASKS):
-            pointer = pointer_symbol if index == cursor else pointer_empty
+            pointer = pointer_symbol if index == cursor else ' '
             checkbox = selected_symbol if task_id in selected else unselected_symbol
             pointer_text = _color(pointer, COLOR_YELLOW) if index == cursor else pointer
             checkbox_color = COLOR_GREEN if task_id in selected else COLOR_DIM
@@ -248,21 +328,201 @@ def _get_selected_tasks(args: argparse.Namespace) -> set[str]:
     return selected
 
 
-def generate_selected(filename: Path, selected_tasks: set[str]) -> None:
+def _worker_progress(label: str) -> Callable[[int, int], None]:
+    def update(current: int, total: int) -> None:
+        print(f'{PROGRESS_PREFIX}|{label}|{current}|{total}', flush=True)
+
+    return update
+
+
+def _run_worker_generation(filename: Path, selected_tasks: set[str]) -> None:
     if not filename.exists():
         raise FileNotFoundError(f'CSV file not found: {filename}')
 
-    print(f'Using CSV: {filename}')
+    print(f'Using CSV: {filename}', flush=True)
 
     if TASK_CREDITS in selected_tasks:
-        setlist = Credits.generate(filename, progress_callback=_make_progress_bar('Credits'))
+        setlist = Credits.generate(filename, progress_callback=_worker_progress('Credits'))
     else:
         setlist = Credits.generate(filename, render_cards=False)
 
     if TASK_LOWER_THIRDS in selected_tasks:
-        LowerThirds.generate(setlist, progress_callback=_make_progress_bar('Lower thirds'))
+        LowerThirds.generate(setlist, progress_callback=_worker_progress('Lower thirds'))
 
-    _open_folder(OUTPUT_FOLDER)
+
+def _worker_args(filename: Path, selected_tasks: set[str]) -> list[str]:
+    args = [sys.executable, str(Path(__file__).resolve()), str(filename), '--worker']
+    if selected_tasks == {TASK_CREDITS, TASK_LOWER_THIRDS}:
+        args.append('--all')
+    else:
+        if TASK_CREDITS in selected_tasks:
+            args.append('--credits')
+        if TASK_LOWER_THIRDS in selected_tasks:
+            args.append('--lowerthirds')
+    return args
+
+
+def _reader_thread(stream, output: queue.Queue[str]) -> None:
+    try:
+        for line in stream:
+            output.put(line.rstrip())
+    finally:
+        output.put(PROGRESS_PREFIX + '|__EOF__|0|0')
+
+
+def _visible_len(text: str) -> int:
+    return len(ANSI_RE.sub('', text))
+
+
+def _fit_line(text: str, width: int) -> str:
+    visible_len = _visible_len(text)
+    if visible_len > width:
+        suffix = '\u2026' if _supports_unicode() else '.'
+        plain_text = ANSI_RE.sub('', text)
+        return plain_text[:max(0, width - 1)] + suffix
+    return text + ' ' * (width - visible_len)
+
+
+def _box_line(text: str = '') -> str:
+    inner_width = BOX_WIDTH - 4
+    edge = '\u2551' if _supports_unicode() else '|'
+    edge = _color(edge, COLOR_CYAN)
+    return f'{edge} {_fit_line(text, inner_width)} {edge}'
+
+
+def _render_run_screen(
+        selected_tasks: set[str],
+        progress: dict[str, tuple[int, int]],
+        logs: list[str],
+        status: str
+) -> None:
+    _move_cursor_home()
+    top = '╔' + '═' * (BOX_WIDTH - 2) + '╗'
+    mid = '╠' + '═' * (BOX_WIDTH - 2) + '╣'
+    bottom = '╚' + '═' * (BOX_WIDTH - 2) + '╝'
+
+    if not _supports_unicode():
+        top = '+' + '=' * (BOX_WIDTH - 2) + '+'
+        mid = '+' + '=' * (BOX_WIDTH - 2) + '+'
+        bottom = '+' + '=' * (BOX_WIDTH - 2) + '+'
+
+    print(_color(top, COLOR_CYAN))
+    print(_box_line(_color('Generating Stream Graphics', COLOR_CYAN)))
+    print(_box_line(status))
+    print(_color(mid, COLOR_CYAN))
+
+    for task_id, label in TASKS:
+        if task_id not in selected_tasks:
+            continue
+        current, total = progress.get(label, (0, 0))
+        if total:
+            bar, percent = _bar(current, total)
+            line = f'{label:<13} {_color_bar(bar, percent)}'
+        else:
+            line = f'{label:<13} waiting...'
+        print(_box_line(line))
+
+    print(_color(mid, COLOR_CYAN))
+    recent_logs = logs[-LOG_LINES:]
+    if not recent_logs:
+        recent_logs = ['Waiting for renderer output...']
+
+    for log in recent_logs:
+        print(_box_line(log))
+
+    for _ in range(LOG_LINES - len(recent_logs)):
+        print(_box_line())
+    print(_color(bottom, COLOR_CYAN))
+    print()
+    print(_color('[esc]', COLOR_YELLOW), 'cancel and return to menu', end='    ')
+    print(_color('[q]', COLOR_YELLOW), 'quit')
+    print('\033[J', end='', flush=True)
+
+
+def _run_generation_controller(filename: Path, selected_tasks: set[str], return_to_menu: bool) -> str:
+    output: queue.Queue[str] = queue.Queue()
+    env = os.environ.copy()
+    env['PYTHONUNBUFFERED'] = '1'
+    process = subprocess.Popen(
+        _worker_args(filename, selected_tasks),
+        cwd=PROJECT_ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        env=env
+    )
+    assert process.stdout is not None
+    thread = threading.Thread(target=_reader_thread, args=(process.stdout, output), daemon=True)
+    thread.start()
+
+    progress: dict[str, tuple[int, int]] = {}
+    logs: list[str] = []
+    status = 'Running...'
+    dirty = True
+
+    with _raw_terminal():
+        _clear_terminal()
+        _hide_cursor()
+        try:
+            while True:
+                while True:
+                    try:
+                        line = output.get_nowait()
+                    except queue.Empty:
+                        break
+
+                    if line.startswith(PROGRESS_PREFIX):
+                        _, label, current, total = line.split('|', 3)
+                        if label != '__EOF__':
+                            progress[label] = (int(current), int(total))
+                            dirty = True
+                    elif line:
+                        logs.append(line)
+                        dirty = True
+
+                key = _poll_key()
+                if key == 'esc':
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                    return 'menu' if return_to_menu else 'cancelled'
+                if key == 'q':
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                    raise SystemExit(0)
+
+                return_code = process.poll()
+                if return_code is not None:
+                    while True:
+                        try:
+                            line = output.get_nowait()
+                        except queue.Empty:
+                            break
+                        if line.startswith(PROGRESS_PREFIX):
+                            _, label, current, total = line.split('|', 3)
+                            if label != '__EOF__':
+                                progress[label] = (int(current), int(total))
+                        elif line:
+                            logs.append(line)
+                    status = 'Complete.' if return_code == 0 else f'Failed with exit code {return_code}.'
+                _render_run_screen(selected_tasks, progress, logs, status)
+                if return_code == 0:
+                    _open_folder(_output_folder_for_tasks(selected_tasks))
+                    return 'done'
+                    raise SystemExit(return_code)
+
+                if dirty:
+                    _render_run_screen(selected_tasks, progress, logs, status)
+                    dirty = False
+                time.sleep(0.05)
+        finally:
+            _show_cursor()
 
 
 def main() -> None:
@@ -270,7 +530,17 @@ def main() -> None:
         args = _parse_args()
         filename = _get_csv_path(args)
         selected_tasks = _get_selected_tasks(args)
-        generate_selected(filename, selected_tasks)
+
+        if args.worker:
+            _run_worker_generation(filename, selected_tasks)
+            return
+
+        has_direct_flags = args.all or args.credits or args.lower_thirds
+        while True:
+            result = _run_generation_controller(filename, selected_tasks, return_to_menu=not has_direct_flags)
+            if result != 'menu':
+                return
+            selected_tasks = _choose_tasks_from_menu()
     except Exception as error:
         print(f'Error: {error}')
         raise

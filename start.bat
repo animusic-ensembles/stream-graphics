@@ -32,4 +32,4 @@ cls
 
 python main.py %*
 
-pause
+if errorlevel 1 pause
