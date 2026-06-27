@@ -2,6 +2,8 @@
 
 Generate credit cards and lower-third section videos from a CSV file.
 
+Requires Python 3.11, 3.12, or 3.13.
+
 ## Windows
 
 Drag your CSV file onto `start.bat`.
