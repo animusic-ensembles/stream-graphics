@@ -30,6 +30,7 @@ def generate(
         plan = layout_card_with_fallback(card)
         img = render_card(plan)
         save_card(img, f'{output_folder}/{card.card_id}.png')
+        print(f'Credit image {index}/{total_cards} saved: {card.card_id}.png', flush=True)
         if progress_callback:
             progress_callback(index, total_cards)
     

@@ -110,9 +110,12 @@ class LowerThird(Scene):
 
 
     def construct(self) -> None:
-        for title, subtitle in self.setlist:
+        total = len(self.setlist)
+        for index, (title, subtitle) in enumerate(self.setlist, start=1):
+            print(f'Lower third {index}/{total} rendering: {title}', flush=True)
             self.next_section(_to_file_safe(title))
             self.render_lower_third(title, subtitle)
+            print(f'Lower third {index}/{total} rendered: {title}', flush=True)
 
     def render_lower_third(self, title_text: str, subtitle_text: str) -> None:
         line = Line(start=_convert(100, 900), end=_convert(100, 900))
