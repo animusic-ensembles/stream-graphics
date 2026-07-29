@@ -8,15 +8,12 @@ import queue
 import re
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from typing import Callable, Iterator
-from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qs, urlencode, urlparse
-from urllib.request import Request, urlopen
 
 import credits.app as Credits
+from input import resolve_csv_input, resolve_pptx_input
 import lower_thirds.app as LowerThirds
 
 
@@ -24,6 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 OUTPUT_FOLDER = PROJECT_ROOT / 'output'
 CREDITS_OUTPUT_FOLDER = OUTPUT_FOLDER / 'credits'
 LOWER_THIRDS_OUTPUT_FOLDER = OUTPUT_FOLDER / 'lower_thirds'
+SLIDES_OUTPUT_FOLDER = OUTPUT_FOLDER / 'slides'
 BAR_WIDTH = 36
 BOX_WIDTH = 78
 LOG_LINES = 8
@@ -43,80 +41,18 @@ ANSI_RE = re.compile(r'\033\[[0-9;?]*[A-Za-z]')
 
 TASK_CREDITS = 'credits'
 TASK_LOWER_THIRDS = 'lower_thirds'
+TASK_SLIDES = 'slides'
 TASKS = [
     (TASK_CREDITS, 'Credits'),
     (TASK_LOWER_THIRDS, 'Lower thirds'),
+    (TASK_SLIDES, 'Slides'),
 ]
-
-
-def _clean_dropped_path(value: str) -> Path:
-    return Path(value.strip().strip('"').strip("'")).expanduser()
-
-
-def _clean_input(value: str) -> str:
-    return value.strip().strip('"').strip("'")
-
-
-def _is_url(value: str) -> bool:
-    parsed = urlparse(value)
-    return parsed.scheme in {'http', 'https'} and bool(parsed.netloc)
-
-
-def _google_sheets_csv_url(value: str) -> str:
-    parsed = urlparse(value)
-    if parsed.netloc.lower() != 'docs.google.com':
-        raise ValueError('Only Google Sheets links are supported.')
-
-    path_parts = [part for part in parsed.path.split('/') if part]
-    if len(path_parts) < 3 or path_parts[0] != 'spreadsheets' or path_parts[1] != 'd':
-        raise ValueError('That does not look like a Google Sheets link.')
-
-    query = parse_qs(parsed.query)
-    fragment = parse_qs(parsed.fragment)
-    gid = (fragment.get('gid') or query.get('gid') or ['0'])[0]
-
-    if path_parts[2] == 'e' and len(path_parts) >= 4:
-        published_id = path_parts[3]
-        params = urlencode({'output': 'csv', 'gid': gid})
-        return f'https://docs.google.com/spreadsheets/d/e/{published_id}/pub?{params}'
-
-    sheet_id = path_parts[2]
-    params = urlencode({'format': 'csv', 'gid': gid})
-    return f'https://docs.google.com/spreadsheets/d/{sheet_id}/export?{params}'
-
-
-def _download_google_sheet_csv(value: str) -> Path:
-    csv_url = _google_sheets_csv_url(value)
-    request = Request(csv_url, headers={'User-Agent': 'stream-graphics-generator'})
-
-    try:
-        with urlopen(request, timeout=30) as response:
-            data = response.read()
-            content_type = response.headers.get('content-type', '')
-    except HTTPError as error:
-        raise RuntimeError(
-            'Could not download the Google Sheet. Make sure the link is public.'
-        ) from error
-    except URLError as error:
-        raise RuntimeError(f'Could not reach Google Sheets: {error.reason}') from error
-
-    preview = data[:256].lstrip().lower()
-    if not data or preview.startswith(b'<!doctype html') or preview.startswith(b'<html'):
-        raise RuntimeError('Google Sheets returned a web page instead of CSV. Make sure the link is public.')
-
-    if 'text/csv' not in content_type and b',' not in data[:4096] and b'\n' not in data[:4096]:
-        raise RuntimeError('Downloaded data does not look like a CSV file.')
-
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.csv', prefix='stream_graphics_')
-    with temp_file:
-        temp_file.write(data)
-    return Path(temp_file.name)
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Generate stream graphics from a credits CSV.')
-    parser.add_argument('csv_path', nargs='?', help='Path to the credits CSV file.')
-    parser.add_argument('--all', action='store_true', help='Generate credits and lower thirds.')
+    parser.add_argument('input_path', nargs='?', help='Input path or public Google link.')
+    parser.add_argument('--all', action='store_true', help='Generate credits, lower thirds, and slides.')
     parser.add_argument('--credits', action='store_true', help='Generate credit card PNGs only.')
     parser.add_argument(
         '--lowerthirds',
@@ -125,20 +61,40 @@ def _parse_args() -> argparse.Namespace:
         action='store_true',
         help='Generate lower-third videos only.'
     )
+    parser.add_argument('--slides', action='store_true', help='Generate slide assets only.')
+    parser.add_argument('--csv-input', help='CSV path or public Google Sheets link.')
+    parser.add_argument('--slides-input', help='PPTX path or public Google Slides link.')
     parser.add_argument('--worker', action='store_true', help=argparse.SUPPRESS)
     return parser.parse_args()
 
 
-def _get_csv_path(args: argparse.Namespace) -> Path:
-    if args.csv_path:
-        raw_value = _clean_input(args.csv_path)
-    else:
-        raw_value = _clean_input(input('Drag/paste a CSV file or public Google Sheets link, then press Enter: '))
+def _needs_csv(selected_tasks: set[str]) -> bool:
+    return bool(selected_tasks & {TASK_CREDITS, TASK_LOWER_THIRDS})
 
-    if _is_url(raw_value):
-        return _download_google_sheet_csv(raw_value)
 
-    return _clean_dropped_path(raw_value)
+def _needs_slides(selected_tasks: set[str]) -> bool:
+    return TASK_SLIDES in selected_tasks
+
+
+def _get_input_paths(args: argparse.Namespace, selected_tasks: set[str]) -> tuple[Path | None, Path | None]:
+    csv_path = None
+    slides_path = None
+
+    if _needs_csv(selected_tasks):
+        raw_value = args.csv_input or args.input_path
+        if not raw_value:
+            raw_value = input('Drag/paste a CSV file or public Google Sheets link, then press Enter: ')
+        csv_path = resolve_csv_input(raw_value)
+
+    if _needs_slides(selected_tasks):
+        raw_value = args.slides_input
+        if not raw_value and not _needs_csv(selected_tasks):
+            raw_value = args.input_path
+        if not raw_value:
+            raw_value = input('Drag/paste a PPTX file or public Google Slides link, then press Enter: ')
+        slides_path = resolve_pptx_input(raw_value)
+
+    return csv_path, slides_path
 
 
 def _open_folder(path: Path) -> None:
@@ -162,6 +118,8 @@ def _output_folder_for_tasks(selected_tasks: set[str]) -> Path:
         return CREDITS_OUTPUT_FOLDER
     if selected_tasks == {TASK_LOWER_THIRDS}:
         return LOWER_THIRDS_OUTPUT_FOLDER
+    if selected_tasks == {TASK_SLIDES}:
+        return SLIDES_OUTPUT_FOLDER
     return OUTPUT_FOLDER
 
 
@@ -311,7 +269,7 @@ def _raw_terminal() -> Iterator[None]:
 
 def _choose_tasks_from_menu() -> set[str]:
     cursor = 0
-    selected = {TASK_CREDITS, TASK_LOWER_THIRDS}
+    selected = {task_id for task_id, _ in TASKS}
     message = ''
     show_help = False
 
@@ -381,18 +339,20 @@ def _choose_tasks_from_menu() -> set[str]:
 
 
 def _get_selected_tasks(args: argparse.Namespace) -> set[str]:
-    has_flag = args.all or args.credits or args.lower_thirds
+    has_flag = args.all or args.credits or args.lower_thirds or args.slides
     if not has_flag:
         return _choose_tasks_from_menu()
 
     if args.all:
-        return {TASK_CREDITS, TASK_LOWER_THIRDS}
+        return {TASK_CREDITS, TASK_LOWER_THIRDS, TASK_SLIDES}
 
     selected: set[str] = set()
     if args.credits:
         selected.add(TASK_CREDITS)
     if args.lower_thirds:
         selected.add(TASK_LOWER_THIRDS)
+    if args.slides:
+        selected.add(TASK_SLIDES)
     return selected
 
 
@@ -403,30 +363,52 @@ def _worker_progress(label: str) -> Callable[[int, int], None]:
     return update
 
 
-def _run_worker_generation(filename: Path, selected_tasks: set[str]) -> None:
-    if not filename.exists():
-        raise FileNotFoundError(f'CSV file not found: {filename}')
+def _run_worker_generation(
+        csv_path: Path | None,
+        slides_path: Path | None,
+        selected_tasks: set[str]
+) -> None:
+    if _needs_csv(selected_tasks):
+        if csv_path is None:
+            raise ValueError('CSV input is required for credits or lower thirds.')
+        if not csv_path.exists():
+            raise FileNotFoundError(f'CSV file not found: {csv_path}')
+        print(f'Using CSV: {csv_path}', flush=True)
 
-    print(f'Using CSV: {filename}', flush=True)
+        if TASK_CREDITS in selected_tasks:
+            setlist = Credits.generate(csv_path, progress_callback=_worker_progress('Credits'))
+        else:
+            setlist = Credits.generate(csv_path, render_cards=False)
 
-    if TASK_CREDITS in selected_tasks:
-        setlist = Credits.generate(filename, progress_callback=_worker_progress('Credits'))
-    else:
-        setlist = Credits.generate(filename, render_cards=False)
+        if TASK_LOWER_THIRDS in selected_tasks:
+            LowerThirds.generate(setlist, progress_callback=_worker_progress('Lower thirds'))
 
-    if TASK_LOWER_THIRDS in selected_tasks:
-        LowerThirds.generate(setlist, progress_callback=_worker_progress('Lower thirds'))
+    if TASK_SLIDES in selected_tasks:
+        if slides_path is None:
+            raise ValueError('Slides input is required for slide generation.')
+        if not slides_path.exists():
+            raise FileNotFoundError(f'PPTX file not found: {slides_path}')
+        import slides.app as Slides
+
+        print(f'Using slides: {slides_path}', flush=True)
+        Slides.generate(str(slides_path), progress_callback=_worker_progress('Slides'))
 
 
-def _worker_args(filename: Path, selected_tasks: set[str]) -> list[str]:
-    args = [sys.executable, str(Path(__file__).resolve()), str(filename), '--worker']
-    if selected_tasks == {TASK_CREDITS, TASK_LOWER_THIRDS}:
+def _worker_args(csv_path: Path | None, slides_path: Path | None, selected_tasks: set[str]) -> list[str]:
+    args = [sys.executable, str(Path(__file__).resolve()), '--worker']
+    if selected_tasks == {TASK_CREDITS, TASK_LOWER_THIRDS, TASK_SLIDES}:
         args.append('--all')
     else:
         if TASK_CREDITS in selected_tasks:
             args.append('--credits')
         if TASK_LOWER_THIRDS in selected_tasks:
             args.append('--lowerthirds')
+        if TASK_SLIDES in selected_tasks:
+            args.append('--slides')
+    if csv_path is not None:
+        args.extend(['--csv-input', str(csv_path)])
+    if slides_path is not None:
+        args.extend(['--slides-input', str(slides_path)])
     return args
 
 
@@ -528,12 +510,17 @@ def _wait_for_any_key() -> None:
     _read_menu_key()
 
 
-def _run_generation_controller(filename: Path, selected_tasks: set[str], return_to_menu: bool) -> str:
+def _run_generation_controller(
+        csv_path: Path | None,
+        slides_path: Path | None,
+        selected_tasks: set[str],
+        return_to_menu: bool
+) -> str:
     output: queue.Queue[str] = queue.Queue()
     env = os.environ.copy()
     env['PYTHONUNBUFFERED'] = '1'
     process = subprocess.Popen(
-        _worker_args(filename, selected_tasks),
+        _worker_args(csv_path, slides_path, selected_tasks),
         cwd=PROJECT_ROOT,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -622,22 +609,22 @@ def main() -> None:
         args = _parse_args()
 
         if args.worker:
-            filename = _get_csv_path(args)
             selected_tasks = _get_selected_tasks(args)
-            _run_worker_generation(filename, selected_tasks)
+            csv_path, slides_path = _get_input_paths(args, selected_tasks)
+            _run_worker_generation(csv_path, slides_path, selected_tasks)
             return
 
-        has_direct_flags = args.all or args.credits or args.lower_thirds
+        has_direct_flags = args.all or args.credits or args.lower_thirds or args.slides
         if has_direct_flags:
             selected_tasks = _get_selected_tasks(args)
-            filename = _get_csv_path(args)
-            _run_generation_controller(filename, selected_tasks, return_to_menu=False)
+            csv_path, slides_path = _get_input_paths(args, selected_tasks)
+            _run_generation_controller(csv_path, slides_path, selected_tasks, return_to_menu=False)
             return
 
         while True:
             selected_tasks = _choose_tasks_from_menu()
-            filename = _get_csv_path(args)
-            result = _run_generation_controller(filename, selected_tasks, return_to_menu=True)
+            csv_path, slides_path = _get_input_paths(args, selected_tasks)
+            result = _run_generation_controller(csv_path, slides_path, selected_tasks, return_to_menu=True)
             if result != 'menu':
                 return
     except Exception as error:

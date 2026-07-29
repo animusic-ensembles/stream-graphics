@@ -15,6 +15,44 @@ if ! python3 -c "import sys; raise SystemExit(0 if (3, 11) <= sys.version_info <
     exit 1
 fi
 
+if ! command -v soffice >/dev/null 2>&1 && ! command -v libreoffice >/dev/null 2>&1; then
+    echo "LibreOffice was not found."
+
+    if command -v apt-get >/dev/null 2>&1; then
+        echo "Installing LibreOffice with apt-get..."
+        sudo apt-get update
+        sudo apt-get install -y libreoffice
+    elif command -v dnf >/dev/null 2>&1; then
+        echo "Installing LibreOffice with dnf..."
+        sudo dnf install -y libreoffice
+    elif command -v pacman >/dev/null 2>&1; then
+        echo "Installing LibreOffice with pacman..."
+        sudo pacman -Sy --needed libreoffice-fresh
+    else
+        echo "Please install LibreOffice, then run this script again."
+        exit 1
+    fi
+fi
+
+if ! command -v ffmpeg >/dev/null 2>&1; then
+    echo "FFmpeg was not found."
+
+    if command -v apt-get >/dev/null 2>&1; then
+        echo "Installing FFmpeg with apt-get..."
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg
+    elif command -v dnf >/dev/null 2>&1; then
+        echo "Installing FFmpeg with dnf..."
+        sudo dnf install -y ffmpeg
+    elif command -v pacman >/dev/null 2>&1; then
+        echo "Installing FFmpeg with pacman..."
+        sudo pacman -Sy --needed ffmpeg
+    else
+        echo "Please install FFmpeg, then run this script again."
+        exit 1
+    fi
+fi
+
 if [ ! -d ".venv" ]; then
     python3 -m venv .venv
 fi

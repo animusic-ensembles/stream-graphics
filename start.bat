@@ -20,6 +20,48 @@ if errorlevel 1 (
     exit /b 1
 )
 
+where soffice >nul 2>nul
+if errorlevel 1 (
+    if not exist "C:\Program Files\LibreOffice\program\soffice.exe" (
+        if not exist "C:\Program Files (x86)\LibreOffice\program\soffice.exe" (
+            echo LibreOffice was not found.
+            where winget >nul 2>nul
+            if errorlevel 1 (
+                echo Please install LibreOffice from https://www.libreoffice.org/download/download-libreoffice/
+                pause
+                exit /b 1
+            )
+
+            echo Installing LibreOffice with winget...
+            winget install --id TheDocumentFoundation.LibreOffice --exact --accept-package-agreements --accept-source-agreements
+            if errorlevel 1 (
+                echo LibreOffice installation failed.
+                pause
+                exit /b 1
+            )
+        )
+    )
+)
+
+where ffmpeg >nul 2>nul
+if errorlevel 1 (
+    echo FFmpeg was not found.
+    where winget >nul 2>nul
+    if errorlevel 1 (
+        echo Please install FFmpeg and make sure it is available on PATH.
+        pause
+        exit /b 1
+    )
+
+    echo Installing FFmpeg with winget...
+    winget install --id Gyan.FFmpeg --exact --accept-package-agreements --accept-source-agreements
+    if errorlevel 1 (
+        echo FFmpeg installation failed.
+        pause
+        exit /b 1
+    )
+)
+
 if not exist ".venv" (
     py -m venv .venv
 )
