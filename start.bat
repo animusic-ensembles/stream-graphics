@@ -32,4 +32,4 @@ cls
 
 python main.py %*
 
-if errorlevel 1 pause
+exit /b %errorlevel%

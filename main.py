@@ -8,9 +8,13 @@ import queue
 import re
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from typing import Callable, Iterator
+from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.request import Request, urlopen
 
 import credits.app as Credits
 import lower_thirds.app as LowerThirds
@@ -49,6 +53,66 @@ def _clean_dropped_path(value: str) -> Path:
     return Path(value.strip().strip('"').strip("'")).expanduser()
 
 
+def _clean_input(value: str) -> str:
+    return value.strip().strip('"').strip("'")
+
+
+def _is_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme in {'http', 'https'} and bool(parsed.netloc)
+
+
+def _google_sheets_csv_url(value: str) -> str:
+    parsed = urlparse(value)
+    if parsed.netloc.lower() != 'docs.google.com':
+        raise ValueError('Only Google Sheets links are supported.')
+
+    path_parts = [part for part in parsed.path.split('/') if part]
+    if len(path_parts) < 3 or path_parts[0] != 'spreadsheets' or path_parts[1] != 'd':
+        raise ValueError('That does not look like a Google Sheets link.')
+
+    query = parse_qs(parsed.query)
+    fragment = parse_qs(parsed.fragment)
+    gid = (fragment.get('gid') or query.get('gid') or ['0'])[0]
+
+    if path_parts[2] == 'e' and len(path_parts) >= 4:
+        published_id = path_parts[3]
+        params = urlencode({'output': 'csv', 'gid': gid})
+        return f'https://docs.google.com/spreadsheets/d/e/{published_id}/pub?{params}'
+
+    sheet_id = path_parts[2]
+    params = urlencode({'format': 'csv', 'gid': gid})
+    return f'https://docs.google.com/spreadsheets/d/{sheet_id}/export?{params}'
+
+
+def _download_google_sheet_csv(value: str) -> Path:
+    csv_url = _google_sheets_csv_url(value)
+    request = Request(csv_url, headers={'User-Agent': 'stream-graphics-generator'})
+
+    try:
+        with urlopen(request, timeout=30) as response:
+            data = response.read()
+            content_type = response.headers.get('content-type', '')
+    except HTTPError as error:
+        raise RuntimeError(
+            'Could not download the Google Sheet. Make sure the link is public.'
+        ) from error
+    except URLError as error:
+        raise RuntimeError(f'Could not reach Google Sheets: {error.reason}') from error
+
+    preview = data[:256].lstrip().lower()
+    if not data or preview.startswith(b'<!doctype html') or preview.startswith(b'<html'):
+        raise RuntimeError('Google Sheets returned a web page instead of CSV. Make sure the link is public.')
+
+    if 'text/csv' not in content_type and b',' not in data[:4096] and b'\n' not in data[:4096]:
+        raise RuntimeError('Downloaded data does not look like a CSV file.')
+
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.csv', prefix='stream_graphics_')
+    with temp_file:
+        temp_file.write(data)
+    return Path(temp_file.name)
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Generate stream graphics from a credits CSV.')
     parser.add_argument('csv_path', nargs='?', help='Path to the credits CSV file.')
@@ -67,10 +131,14 @@ def _parse_args() -> argparse.Namespace:
 
 def _get_csv_path(args: argparse.Namespace) -> Path:
     if args.csv_path:
-        return _clean_dropped_path(args.csv_path)
+        raw_value = _clean_input(args.csv_path)
+    else:
+        raw_value = _clean_input(input('Drag/paste a CSV file or public Google Sheets link, then press Enter: '))
 
-    raw_path = input('Drag your CSV file here, then press Enter: ')
-    return _clean_dropped_path(raw_path)
+    if _is_url(raw_value):
+        return _download_google_sheet_csv(raw_value)
+
+    return _clean_dropped_path(raw_value)
 
 
 def _open_folder(path: Path) -> None:
@@ -394,7 +462,8 @@ def _render_run_screen(
         selected_tasks: set[str],
         progress: dict[str, tuple[int, int]],
         logs: list[str],
-        status: str
+        status: str,
+        footer: str = 'active'
 ) -> None:
     _move_cursor_home()
     top = '╔' + '═' * (BOX_WIDTH - 2) + '╗'
@@ -434,9 +503,29 @@ def _render_run_screen(
         print(_box_line())
     print(_color(bottom, COLOR_CYAN))
     print()
-    print(_color('[esc]', COLOR_YELLOW), 'cancel and return to menu', end='    ')
-    print(_color('[q]', COLOR_YELLOW), 'quit')
+    print('\033[2K', end='')
+    if footer == 'failed':
+        print(_color('Action failed.', COLOR_YELLOW))
+        print('\033[2K', end='')
+        print('Press any key to continue…')
+    else:
+        print(_color('[esc]', COLOR_YELLOW), 'cancel and return to menu', end='    ')
+        print(_color('[q]', COLOR_YELLOW), 'quit')
+        print('\033[2K')
     print('\033[J', end='', flush=True)
+
+
+def _wait_for_any_key() -> None:
+    if not sys.stdin.isatty():
+        input()
+        return
+
+    if platform.system() == 'Windows':
+        msvcrt = importlib.import_module('msvcrt')
+        msvcrt.getwch()
+        return
+
+    _read_menu_key()
 
 
 def _run_generation_controller(filename: Path, selected_tasks: set[str], return_to_menu: bool) -> str:
@@ -511,10 +600,13 @@ def _run_generation_controller(filename: Path, selected_tasks: set[str], return_
                         elif line:
                             logs.append(line)
                     status = 'Complete.' if return_code == 0 else f'Failed with exit code {return_code}.'
-                _render_run_screen(selected_tasks, progress, logs, status)
-                if return_code == 0:
-                    _open_folder(_output_folder_for_tasks(selected_tasks))
-                    return 'done'
+                    if return_code == 0:
+                        _render_run_screen(selected_tasks, progress, logs, status)
+                        _open_folder(_output_folder_for_tasks(selected_tasks))
+                        return 'done'
+                    _render_run_screen(selected_tasks, progress, logs, status, footer='failed')
+                    _show_cursor()
+                    _wait_for_any_key()
                     raise SystemExit(return_code)
 
                 if dirty:
@@ -528,19 +620,26 @@ def _run_generation_controller(filename: Path, selected_tasks: set[str], return_
 def main() -> None:
     try:
         args = _parse_args()
-        filename = _get_csv_path(args)
-        selected_tasks = _get_selected_tasks(args)
 
         if args.worker:
+            filename = _get_csv_path(args)
+            selected_tasks = _get_selected_tasks(args)
             _run_worker_generation(filename, selected_tasks)
             return
 
         has_direct_flags = args.all or args.credits or args.lower_thirds
+        if has_direct_flags:
+            selected_tasks = _get_selected_tasks(args)
+            filename = _get_csv_path(args)
+            _run_generation_controller(filename, selected_tasks, return_to_menu=False)
+            return
+
         while True:
-            result = _run_generation_controller(filename, selected_tasks, return_to_menu=not has_direct_flags)
+            selected_tasks = _choose_tasks_from_menu()
+            filename = _get_csv_path(args)
+            result = _run_generation_controller(filename, selected_tasks, return_to_menu=True)
             if result != 'menu':
                 return
-            selected_tasks = _choose_tasks_from_menu()
     except Exception as error:
         print(f'Error: {error}')
         raise

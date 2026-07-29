@@ -1,6 +1,6 @@
 # Stream Graphics Generator
 
-Generate credit cards and lower-third section videos from a CSV file.
+Generate credit cards and lower-third section videos from a CSV file or public Google Sheets link.
 
 Requires Python 3.11, 3.12, or 3.13.
 
@@ -8,7 +8,7 @@ Requires Python 3.11, 3.12, or 3.13.
 
 Drag your CSV file onto `start.bat`.
 
-If you run `start.bat` directly, it will ask you to drag or paste the CSV path into the terminal.
+If you run `start.bat` directly, it will ask you to drag/paste a CSV path or public Google Sheets link into the terminal.
 
 ## macOS / Linux
 
@@ -18,13 +18,15 @@ Run:
 sh start.sh
 ```
 
-Then drag or paste the CSV path into the terminal.
+Then drag or paste the CSV path or public Google Sheets link into the terminal.
 
-You can also pass the CSV path directly:
+You can also pass the CSV path or public Google Sheets link directly:
 
 ```sh
 sh start.sh path/to/credits.csv
 ```
+
+Google Sheets links must be public. Private sheets fail before generation starts.
 
 ## Options
 
