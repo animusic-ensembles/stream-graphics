@@ -15,11 +15,29 @@ from urllib.request import Request, urlopen
 PROJECT_ROOT = Path(__file__).resolve().parent
 FONTS_DIR = PROJECT_ROOT / 'fonts'
 FONT_EXTENSIONS = {'.ttf', '.otf', '.woff', '.woff2'}
+SYSTEM_FONT_EXTENSIONS = {'.ttf', '.otf'}
 _FONTS_READY = False
 HWND_BROADCAST = 0xFFFF
 WM_FONTCHANGE = 0x001D
 FONT_ATTR_PATTERN = re.compile(r'typeface="([^"]+)"')
 FONT_URL_PATTERN = re.compile(r'url\((https://[^)]+)\)')
+FONT_STYLE_SUFFIXES = (
+    'Thin',
+    'Extra Light',
+    'ExtraLight',
+    'Light',
+    'Regular',
+    'Medium',
+    'Semi Bold',
+    'SemiBold',
+    'Demi Bold',
+    'DemiBold',
+    'Bold',
+    'Extra Bold',
+    'ExtraBold',
+    'Black',
+    'Italic',
+)
 IGNORED_TYPEFACES = {
     '',
     '+mj-cs',
@@ -69,15 +87,52 @@ def _font_family_names_from_pptx(pptx_path: Path) -> set[str]:
     return families
 
 
+def _google_font_family_candidates(family: str) -> list[str]:
+    candidates = [family]
+    for suffix in FONT_STYLE_SUFFIXES:
+        style_suffix = f' {suffix}'
+        if family.endswith(style_suffix):
+            candidates.append(family[:-len(style_suffix)])
+            break
+    return list(dict.fromkeys(candidates))
+
+
+def _download_google_font_family_css(family: str) -> tuple[str, str] | None:
+    css_urls = [
+        (
+            'https://fonts.googleapis.com/css2'
+            f'?family={quote_plus(family)}:wght@100;200;300;400;500;600;700;800;900'
+            '&display=swap'
+        ),
+        (
+            'https://fonts.googleapis.com/css2'
+            f'?family={quote_plus(family)}'
+            '&display=swap'
+        ),
+    ]
+
+    for css_url in css_urls:
+        try:
+            css = _download(css_url).decode('utf-8', errors='ignore')
+            return css, css_url
+        except (HTTPError, URLError, TimeoutError, OSError):
+            continue
+
+    return None
+
+
 def _download_google_font_family(family: str, output_dir: Path) -> list[Path]:
-    css_url = (
-        'https://fonts.googleapis.com/css2'
-        f'?family={quote_plus(family)}:wght@100;200;300;400;500;600;700;800;900'
-        '&display=swap'
-    )
-    try:
-        css = _download(css_url).decode('utf-8', errors='ignore')
-    except (HTTPError, URLError, TimeoutError, OSError):
+    css = ''
+    resolved_family = family
+    for family_candidate in _google_font_family_candidates(family):
+        downloaded_css = _download_google_font_family_css(family_candidate)
+        if downloaded_css is None:
+            continue
+        resolved_family = family_candidate
+        css, _css_url = downloaded_css
+        break
+
+    if not css:
         return []
 
     downloaded: list[Path] = []
@@ -88,11 +143,42 @@ def _download_google_font_family(family: str, output_dir: Path) -> list[Path]:
             continue
 
         suffix = Path(font_url.split('?', 1)[0]).suffix or '.woff2'
-        output_path = output_dir / f'{family.replace(" ", "_")}_{index}{suffix}'
+        output_path = output_dir / f'{resolved_family.replace(" ", "_")}_{index}{suffix}'
         output_path.write_bytes(data)
         downloaded.append(output_path)
 
     return downloaded
+
+
+def _convert_web_font_to_ttf(font_path: Path) -> Path | None:
+    if font_path.suffix.lower() not in {'.woff', '.woff2'}:
+        return font_path
+
+    try:
+        from fontTools.ttLib import TTFont
+    except ModuleNotFoundError:
+        print(f'Could not convert {font_path.name}: fonttools is not installed.', flush=True)
+        return None
+
+    output_path = font_path.with_suffix('.ttf')
+    try:
+        font = TTFont(str(font_path))
+        font.flavor = None
+        font.save(str(output_path))
+    except Exception as error:
+        print(f'Could not convert {font_path.name} to TTF: {error}', flush=True)
+        return None
+
+    return output_path
+
+
+def _convert_web_fonts_to_system_fonts(fonts: list[Path]) -> list[Path]:
+    system_fonts: list[Path] = []
+    for font in fonts:
+        converted = _convert_web_font_to_ttf(font)
+        if converted is not None and converted.suffix.lower() in SYSTEM_FONT_EXTENSIONS:
+            system_fonts.append(converted)
+    return system_fonts
 
 
 def download_google_fonts_for_pptx(pptx_path: Path, output_dir: Path) -> list[Path]:
@@ -102,11 +188,11 @@ def download_google_fonts_for_pptx(pptx_path: Path, output_dir: Path) -> list[Pa
         family_fonts = _download_google_font_family(family, output_dir)
         if family_fonts:
             print(f'Downloaded Google Font family: {family}', flush=True)
-            downloaded.extend(family_fonts)
+            downloaded.extend(_convert_web_fonts_to_system_fonts(family_fonts))
 
     if downloaded:
         extensions = ', '.join(sorted({path.suffix.lower() for path in downloaded}))
-        print(f'Downloaded {len(downloaded)} Google Font file(s) for slide rendering ({extensions}).', flush=True)
+        print(f'Prepared {len(downloaded)} Google Font file(s) for slide rendering ({extensions}).', flush=True)
     return downloaded
 
 
