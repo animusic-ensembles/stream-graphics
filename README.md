@@ -1,6 +1,6 @@
 # Stream Graphics Generator
 
-Generate credit cards and lower-third section videos from a CSV file or public Google Sheets link.
+Generate credit cards, lower-third section videos, and slide assets.
 
 Requires Python 3.11, 3.12, or 3.13.
 
@@ -8,7 +8,7 @@ Requires Python 3.11, 3.12, or 3.13.
 
 Drag your CSV file onto `start.bat`.
 
-If you run `start.bat` directly, it will ask you to drag/paste a CSV path or public Google Sheets link into the terminal.
+If you run `start.bat` directly, it will ask what to generate, then ask for the required input files or public Google links.
 
 ## macOS / Linux
 
@@ -18,15 +18,15 @@ Run:
 sh start.sh
 ```
 
-Then drag or paste the CSV path or public Google Sheets link into the terminal.
+Then choose what to generate and provide the requested input files or public Google links.
 
-You can also pass the CSV path or public Google Sheets link directly:
+You can also pass input paths directly:
 
 ```sh
 sh start.sh path/to/credits.csv
 ```
 
-Google Sheets links must be public. Private sheets fail before generation starts.
+Google Sheets and Google Slides links must be public. Private links fail before generation starts.
 
 ## Options
 
@@ -40,6 +40,8 @@ Windows:
 start.bat path\to\credits.csv --all
 start.bat path\to\credits.csv --credits
 start.bat path\to\credits.csv --lowerthirds
+start.bat path\to\slides.pptx --slides
+start.bat path\to\credits.csv --all --slides-input path\to\slides.pptx
 ```
 
 macOS / Linux:
@@ -48,6 +50,8 @@ macOS / Linux:
 sh start.sh path/to/credits.csv --all
 sh start.sh path/to/credits.csv --credits
 sh start.sh path/to/credits.csv --lowerthirds
+sh start.sh path/to/slides.pptx --slides
+sh start.sh path/to/credits.csv --all --slides-input path/to/slides.pptx
 ```
 
 ## Output
@@ -57,3 +61,5 @@ When generation finishes, the app opens the `output` folder.
 Credit card PNGs are saved in `output/credits`.
 
 Lower-third section videos are saved in `output/lower_thirds`.
+
+Slide assets are saved in `output/slides`.
