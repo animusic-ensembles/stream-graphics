@@ -228,6 +228,21 @@ def _install_linux_user_fonts(fonts: list[Path], destination_dir: Path | None = 
         print('Installed project fonts, but fc-cache was not found. LibreOffice may need fontconfig refresh.', flush=True)
 
 
+def _install_macos_user_fonts(fonts: list[Path]) -> None:
+    destination_dir = Path.home() / 'Library' / 'Fonts'
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    installed = 0
+
+    for font in fonts:
+        destination = destination_dir / font.name
+        if not destination.exists() or destination.stat().st_size != font.stat().st_size:
+            shutil.copy2(font, destination)
+            installed += 1
+
+    if installed:
+        print(f'Installed {installed} project font file(s) for this macOS user.', flush=True)
+
+
 def ensure_project_fonts_available(extra_fonts: list[Path] | None = None, linux_font_dir: Path | None = None) -> None:
     global _FONTS_READY
     extra_fonts = extra_fonts or []
@@ -244,6 +259,8 @@ def ensure_project_fonts_available(extra_fonts: list[Path] | None = None, linux_
         _install_windows_session_fonts(fonts)
     elif system == 'Linux':
         _install_linux_user_fonts(fonts, linux_font_dir)
+    elif system == 'Darwin':
+        _install_macos_user_fonts(fonts)
     else:
         print(f'Automatic font installation is not supported on {system}.', flush=True)
 

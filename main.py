@@ -103,11 +103,15 @@ def _open_folder(path: Path) -> None:
 
     try:
         if system == 'Windows':
-            subprocess.run(['explorer', str(path)], check=False)
+            result = subprocess.run(['explorer', str(path)], check=False)
         elif system == 'Darwin':
-            subprocess.run(['open', str(path)], check=False)
+            result = subprocess.run(['open', str(path)], check=False)
         else:
-            subprocess.run(['xdg-open', str(path)], check=False)
+            result = subprocess.run(['xdg-open', str(path)], check=False)
+
+        if result.returncode != 0:
+            print(f'Could not open output folder automatically.')
+            print(f'Open it manually here: {path}')
     except OSError as error:
         print(f'Could not open output folder automatically: {error}')
         print(f'Open it manually here: {path}')

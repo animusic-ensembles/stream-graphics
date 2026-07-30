@@ -31,7 +31,10 @@ def _find_libreoffice() -> str:
         Path('C:/Program Files/LibreOffice/program/soffice.exe'),
         Path('C:/Program Files (x86)/LibreOffice/program/soffice.exe'),
     ]
-    for candidate in windows_candidates:
+    macos_candidates = [
+        Path('/Applications/LibreOffice.app/Contents/MacOS/soffice'),
+    ]
+    for candidate in windows_candidates + macos_candidates:
         if candidate.exists():
             return str(candidate)
 
@@ -355,7 +358,7 @@ def export_static_pngs(
         temp_path = Path(temp_dir)
         google_font_dir = temp_path / 'google_fonts'
         google_fonts = download_google_fonts_for_pptx(pptx_path, google_font_dir)
-        ensure_project_fonts_available(google_fonts, google_font_dir)
+        ensure_project_fonts_available(google_fonts)
         image_background_slide_indexes = _image_background_slide_indexes(pptx_path, skipped_slide_indexes)
         transparent_slide_indexes = {
             slide_index
