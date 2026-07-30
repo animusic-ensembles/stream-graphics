@@ -6,6 +6,7 @@ from typing import Iterable
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.shapes.base import BaseShape
+from pptx.shapes.group import GroupShape
 
 from .models import Crop, Placement, ShapeInventory, SlideInventory
 
@@ -57,7 +58,7 @@ def _absolute_inventory(
     height = int(shape.height)
 
     children: list[ShapeInventory] = []
-    if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+    if isinstance(shape, GroupShape):
         for child_z_index, child in enumerate(shape.shapes, start=1):
             children.append(
                 _absolute_inventory(
@@ -108,7 +109,10 @@ def _slide_inventory(slide_number: int, shapes: Iterable[BaseShape], slide_width
 
 
 def inventory_presentation(path: str | Path) -> list[SlideInventory]:
-    presentation = Presentation(path)
+    presentation = Presentation(str(path))
+    if presentation.slide_width is None or presentation.slide_height is None:
+        raise RuntimeError('Presentation slide dimensions could not be read.')
+
     slide_width = int(presentation.slide_width)
     slide_height = int(presentation.slide_height)
 

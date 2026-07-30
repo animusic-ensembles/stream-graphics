@@ -12,6 +12,7 @@ from PIL import Image
 from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE
+from pptx.util import Length
 
 from font_setup import download_google_fonts_for_pptx, ensure_project_fonts_available
 
@@ -86,6 +87,8 @@ def _save_shape_filtered_pptx(
 ) -> None:
     presentation = Presentation(str(pptx_path))
     background_color_by_slide = background_color_by_slide or {}
+    if presentation.slide_width is None or presentation.slide_height is None:
+        raise RuntimeError('Presentation slide dimensions could not be read.')
 
     for slide_index, slide in enumerate(presentation.slides):
         remove_shape_ids = shape_ids_by_slide[slide_index] if slide_index < len(shape_ids_by_slide) else set()
@@ -110,10 +113,10 @@ def _save_shape_filtered_pptx(
         if slide_index in background_color_by_slide:
             background = slide.shapes.add_shape(
                 MSO_SHAPE.RECTANGLE,
-                0,
-                0,
-                presentation.slide_width,
-                presentation.slide_height,
+                Length(0),
+                Length(0),
+                Length(presentation.slide_width),
+                Length(presentation.slide_height),
             )
             background.fill.solid()
             background.fill.fore_color.rgb = RGBColor(*background_color_by_slide[slide_index])
@@ -156,11 +159,11 @@ def _render_pdf_to_slide_pngs(
         suffix: str = '',
 ) -> None:
     try:
-        import fitz
+        import pymupdf
     except ModuleNotFoundError as error:
         raise RuntimeError('PyMuPDF is required to render LibreOffice PDF output. Run the launcher to install dependencies.') from error
 
-    document = fitz.open(str(pdf_path))
+    document = pymupdf.open(str(pdf_path))
     try:
         if document.page_count != slide_count:
             raise RuntimeError(
@@ -171,9 +174,9 @@ def _render_pdf_to_slide_pngs(
             if page_index in skipped_slide_indexes:
                 continue
 
-            page = document.load_page(page_index)
-            pixmap = page.get_pixmap(
-                matrix=fitz.Matrix(OUTPUT_WIDTH / page.rect.width, OUTPUT_HEIGHT / page.rect.height),
+            page: pymupdf.Page = document.load_page(page_index)
+            pixmap: pymupdf.Pixmap = page.get_pixmap(  # pyright: ignore[reportAttributeAccessIssue]
+                matrix=pymupdf.Matrix(OUTPUT_WIDTH / page.rect.width, OUTPUT_HEIGHT / page.rect.height),
                 alpha=False,
             )
             static_path = output_folder / f'{page_index:02d}{suffix}.png'
@@ -216,15 +219,15 @@ def _render_static_pngs_with_alpha(
 
 def _render_pdf_page_to_png(pdf_path: Path, page_index: int, output_path: Path) -> None:
     try:
-        import fitz
+        import pymupdf
     except ModuleNotFoundError as error:
         raise RuntimeError('PyMuPDF is required to render LibreOffice PDF output. Run the launcher to install dependencies.') from error
 
-    document = fitz.open(str(pdf_path))
+    document = pymupdf.open(str(pdf_path))
     try:
-        page = document.load_page(page_index)
-        pixmap = page.get_pixmap(
-            matrix=fitz.Matrix(OUTPUT_WIDTH / page.rect.width, OUTPUT_HEIGHT / page.rect.height),
+        page: pymupdf.Page = document.load_page(page_index)
+        pixmap: pymupdf.Pixmap = page.get_pixmap(  # pyright: ignore[reportAttributeAccessIssue]
+            matrix=pymupdf.Matrix(OUTPUT_WIDTH / page.rect.width, OUTPUT_HEIGHT / page.rect.height),
             alpha=False,
         )
         pixmap.save(str(output_path))
@@ -243,6 +246,9 @@ def _alpha_from_black_white_renders(black_path: Path, white_path: Path, output_p
     black_pixels = black.load()
     white_pixels = white.load()
     output_pixels = output.load()
+    assert black_pixels is not None
+    assert white_pixels is not None
+    assert output_pixels is not None
 
     for y in range(black.height):
         for x in range(black.width):
