@@ -334,7 +334,7 @@ def extract_animated_gifs(
         slide_height: int
 ) -> list[SlideLayer]:
     layers: list[SlideLayer] = []
-    layer_index = 1
+    animated_shapes: list[tuple[int, BaseShape, bytes, Placement, bool]] = []
 
     for z_index, shape in enumerate(shapes, start=1):
         if shape.shape_type != MSO_SHAPE_TYPE.PICTURE:
@@ -350,6 +350,15 @@ def extract_animated_gifs(
 
         placement = _placement(shape, slide_width, slide_height)
         export_as_gif = _is_background_gif(placement)
+        animated_shapes.append((z_index, shape, blob, placement, export_as_gif))
+
+    has_background_animation = any(
+        export_as_gif
+        for _z_index, _shape, _blob, _placement_value, export_as_gif in animated_shapes
+    )
+    layer_index = 1 if has_background_animation else 2
+
+    for z_index, shape, blob, placement, export_as_gif in animated_shapes:
         extension = 'gif' if export_as_gif else 'png'
         full_canvas_filename = f'{slide_index:02d}_layer{layer_index}.{extension}'
         rotation = float(shape.rotation or 0.0)

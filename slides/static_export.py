@@ -157,6 +157,8 @@ def _render_pdf_to_slide_pngs(
         skipped_slide_indexes: set[int],
         progress_callback: Callable[[], None] | None = None,
         suffix: str = '',
+        log_saved_outputs: bool = False,
+        layered_static_slide_indexes: set[int] | None = None,
 ) -> None:
     try:
         import pymupdf
@@ -179,11 +181,20 @@ def _render_pdf_to_slide_pngs(
                 matrix=pymupdf.Matrix(OUTPUT_WIDTH / page.rect.width, OUTPUT_HEIGHT / page.rect.height),
                 alpha=False,
             )
-            static_path = output_folder / f'{page_index:02d}{suffix}.png'
+            layered_static_slide_indexes = layered_static_slide_indexes or set()
+            output_stem = (
+                f'{page_index:02d}_layer1'
+                if not suffix and page_index in layered_static_slide_indexes
+                else f'{page_index:02d}{suffix}'
+            )
+            static_path = output_folder / f'{output_stem}.png'
             pixmap.save(str(static_path))
 
             if pixmap.width != OUTPUT_WIDTH or pixmap.height != OUTPUT_HEIGHT:
                 raise RuntimeError(f'{static_path} was rendered at {pixmap.width}x{pixmap.height}, expected 1920x1080.')
+
+            if log_saved_outputs:
+                print(f'Slide {page_index + 1}/{slide_count} saved: {static_path.name}', flush=True)
 
             if progress_callback:
                 progress_callback()
@@ -197,6 +208,7 @@ def _render_static_pngs_with_alpha(
         output_folder: Path,
         slide_count: int,
         skipped_slide_indexes: set[int],
+        layered_static_slide_indexes: set[int],
         progress_callback: Callable[[], None] | None = None,
 ) -> None:
     with tempfile.TemporaryDirectory(prefix='stream_graphics_static_alpha_') as temp_dir:
@@ -208,11 +220,17 @@ def _render_static_pngs_with_alpha(
             if slide_index in skipped_slide_indexes:
                 continue
 
+            output_filename = (
+                f'{slide_index:02d}_layer1.png'
+                if slide_index in layered_static_slide_indexes
+                else f'{slide_index:02d}.png'
+            )
             _alpha_from_black_white_renders(
                 temp_path / f'{slide_index:02d}_black.png',
                 temp_path / f'{slide_index:02d}_white.png',
-                output_folder / f'{slide_index:02d}.png',
+                output_folder / output_filename,
             )
+            print(f'Slide {slide_index + 1}/{slide_count} saved: {output_filename}', flush=True)
             if progress_callback:
                 progress_callback()
 
@@ -314,6 +332,7 @@ def _export_transparent_static_overlay(
         white_png_path,
         output_folder / output_filename,
     )
+    print(f'Slide {slide_index + 1}/{slide_count} saved: {output_filename}', flush=True)
     if progress_callback:
         progress_callback()
 
@@ -324,11 +343,13 @@ def export_static_pngs(
         slide_count: int,
         shape_ids_by_slide: list[set[int]],
         skipped_slide_indexes: set[int] | None = None,
-        transparent_overlay_shape_ids_by_slide: dict[int, tuple[set[int], str]] | None = None,
+        layered_static_slide_indexes: set[int] | None = None,
+        transparent_static_layers_by_slide: dict[int, list[tuple[set[int], str]]] | None = None,
         progress_callback: Callable[[], None] | None = None,
 ) -> None:
     skipped_slide_indexes = skipped_slide_indexes or set()
-    transparent_overlay_shape_ids_by_slide = transparent_overlay_shape_ids_by_slide or {}
+    layered_static_slide_indexes = layered_static_slide_indexes or set()
+    transparent_static_layers_by_slide = transparent_static_layers_by_slide or {}
 
     with tempfile.TemporaryDirectory(prefix='stream_graphics_slides_pdf_') as temp_dir:
         temp_path = Path(temp_dir)
@@ -383,6 +404,7 @@ def export_static_pngs(
             output_folder,
             slide_count,
             transparent_skipped_slide_indexes,
+            layered_static_slide_indexes,
             progress_callback,
         )
 
@@ -396,16 +418,19 @@ def export_static_pngs(
                 slide_count,
                 image_background_skipped_slide_indexes,
                 progress_callback,
+                log_saved_outputs=True,
+                layered_static_slide_indexes=layered_static_slide_indexes,
             )
 
-        for slide_index, (keep_shape_ids, output_filename) in transparent_overlay_shape_ids_by_slide.items():
-            _export_transparent_static_overlay(
-                pptx_path,
-                output_folder,
-                slide_count,
-                slide_index,
-                keep_shape_ids,
-                output_filename,
-                temp_path,
-                progress_callback,
-            )
+        for slide_index, static_layers in transparent_static_layers_by_slide.items():
+            for keep_shape_ids, output_filename in static_layers:
+                _export_transparent_static_overlay(
+                    pptx_path,
+                    output_folder,
+                    slide_count,
+                    slide_index,
+                    keep_shape_ids,
+                    output_filename,
+                    temp_path,
+                    progress_callback,
+                )
