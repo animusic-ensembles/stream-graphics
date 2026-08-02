@@ -158,6 +158,7 @@ def _render_pdf_to_slide_pngs(
         output_folder: Path,
         slide_count: int,
         skipped_slide_indexes: set[int],
+        slide_stems: list[str],
         progress_callback: Callable[[], None] | None = None,
         suffix: str = '',
         log_saved_outputs: bool = False,
@@ -185,10 +186,11 @@ def _render_pdf_to_slide_pngs(
                 alpha=False,
             )
             layered_static_slide_indexes = layered_static_slide_indexes or set()
+            slide_stem = slide_stems[page_index]
             output_stem = (
-                f'{page_index:02d}_layer1'
+                f'{slide_stem}_layer1'
                 if not suffix and page_index in layered_static_slide_indexes
-                else f'{page_index:02d}{suffix}'
+                else f'{slide_stem}{suffix}'
             )
             static_path = output_folder / f'{output_stem}.png'
             pixmap.save(str(static_path))
@@ -212,25 +214,27 @@ def _render_static_pngs_with_alpha(
         slide_count: int,
         skipped_slide_indexes: set[int],
         layered_static_slide_indexes: set[int],
+        slide_stems: list[str],
         progress_callback: Callable[[], None] | None = None,
 ) -> None:
     with tempfile.TemporaryDirectory(prefix='stream_graphics_static_alpha_') as temp_dir:
         temp_path = Path(temp_dir)
-        _render_pdf_to_slide_pngs(black_pdf_path, temp_path, slide_count, skipped_slide_indexes, suffix='_black')
-        _render_pdf_to_slide_pngs(white_pdf_path, temp_path, slide_count, skipped_slide_indexes, suffix='_white')
+        _render_pdf_to_slide_pngs(black_pdf_path, temp_path, slide_count, skipped_slide_indexes, slide_stems, suffix='_black')
+        _render_pdf_to_slide_pngs(white_pdf_path, temp_path, slide_count, skipped_slide_indexes, slide_stems, suffix='_white')
 
         for slide_index in range(slide_count):
             if slide_index in skipped_slide_indexes:
                 continue
 
+            slide_stem = slide_stems[slide_index]
             output_filename = (
-                f'{slide_index:02d}_layer1.png'
+                f'{slide_stem}_layer1.png'
                 if slide_index in layered_static_slide_indexes
-                else f'{slide_index:02d}.png'
+                else f'{slide_stem}.png'
             )
             _alpha_from_black_white_renders(
-                temp_path / f'{slide_index:02d}_black.png',
-                temp_path / f'{slide_index:02d}_white.png',
+                temp_path / f'{slide_stem}_black.png',
+                temp_path / f'{slide_stem}_white.png',
                 output_folder / output_filename,
             )
             print(f'Slide {slide_index + 1}/{slide_count} saved: {output_filename}', flush=True)
@@ -345,6 +349,7 @@ def export_static_pngs(
         output_folder: Path,
         slide_count: int,
         shape_ids_by_slide: list[set[int]],
+        slide_stems: list[str],
         skipped_slide_indexes: set[int] | None = None,
         layered_static_slide_indexes: set[int] | None = None,
         transparent_static_layers_by_slide: dict[int, list[tuple[set[int], str]]] | None = None,
@@ -408,6 +413,7 @@ def export_static_pngs(
             slide_count,
             transparent_skipped_slide_indexes,
             layered_static_slide_indexes,
+            slide_stems,
             progress_callback,
         )
 
@@ -420,6 +426,7 @@ def export_static_pngs(
                 output_folder,
                 slide_count,
                 image_background_skipped_slide_indexes,
+                slide_stems,
                 progress_callback,
                 log_saved_outputs=True,
                 layered_static_slide_indexes=layered_static_slide_indexes,

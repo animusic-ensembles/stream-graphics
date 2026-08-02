@@ -256,7 +256,7 @@ def _slide_video_url(shapes: list[BaseShape]) -> tuple[str, str] | None:
 def extract_videos(
         shapes: list[BaseShape],
         output_folder: Path,
-        slide_index: int,
+        slide_stem: str,
         slide_width: int,
         slide_height: int,
 ) -> list[SlideLayer]:
@@ -267,7 +267,7 @@ def extract_videos(
         if not shape_video_reason(shape):
             continue
 
-        output_stem = f'{slide_index:02d}' if video_index == 1 else f'{slide_index:02d}_video_{video_index}'
+        output_stem = slide_stem if video_index == 1 else f'{slide_stem}_video_{video_index}'
         output_template = output_folder / output_stem
         output_path: Path | None = None
 
@@ -307,7 +307,7 @@ def extract_videos(
         return []
 
     url, source_type = slide_url
-    output_path = _download_video(url, source_type, output_folder / f'{slide_index:02d}')
+    output_path = _download_video(url, source_type, output_folder / slide_stem)
     fallback_shape = next((shape for shape in shapes if shape_video_reason(shape)), shapes[-1])
     return [
         SlideLayer(

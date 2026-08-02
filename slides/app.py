@@ -10,6 +10,7 @@ from input import resolve_pptx_input
 from .inventory import inventory_presentation
 from .gifs import extract_animated_gifs
 from .models import Placement, SlideLayer
+from .notes import slide_output_stems_from_notes
 from .static_export import export_static_pngs
 from .videos import extract_videos, slide_video_reason
 from pptx import Presentation
@@ -18,7 +19,7 @@ from pptx.shapes.base import BaseShape
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 OUTPUT_FOLDER = PROJECT_ROOT / 'output' / 'slides'
-LAYER_FILENAME_PATTERN = re.compile(r'^\d{2}_layer(\d+)\.')
+LAYER_FILENAME_PATTERN = re.compile(r'_layer(\d+)\.')
 
 
 def clear_output() -> None:
@@ -77,6 +78,7 @@ def write_inventory(pptx_path: Path, progress_callback: Callable[[int, int], Non
     clear_output()
     inventories = inventory_presentation(pptx_path)
     presentation = Presentation(str(pptx_path))
+    slide_stems = slide_output_stems_from_notes(pptx_path, len(inventories))
     removed_shape_ids_by_slide: list[set[int]] = []
     skipped_static_slide_indexes: set[int] = set()
     layered_static_slide_indexes: set[int] = set()
@@ -100,14 +102,15 @@ def write_inventory(pptx_path: Path, progress_callback: Callable[[int, int], Non
         slide_shapes = list(slide.shapes)
         video_reason = slide_video_reason(slide_shapes)
         output_index = inventory.slide_number - 1
+        slide_stem = slide_stems[output_index]
         slide_label = f'Slide {inventory.slide_number}/{total_slides}'
-        print(f'{slide_label} processing: {output_index:02d}', flush=True)
+        print(f'{slide_label} processing: {slide_stem}', flush=True)
         if video_reason:
             print(f'{slide_label} video detected: {video_reason}', flush=True)
             inventory.layers = extract_videos(
                 slide_shapes,
                 OUTPUT_FOLDER,
-                output_index,
+                slide_stem,
                 inventory.slide_width,
                 inventory.slide_height,
             )
@@ -115,14 +118,14 @@ def write_inventory(pptx_path: Path, progress_callback: Callable[[int, int], Non
                 raise RuntimeError(f'{slide_label}: video detected, but no video file could be downloaded or extracted.')
             skipped_static_slide_indexes.add(output_index)
             removed_shape_ids_by_slide.append(set())
-            print(f'{slide_label} processed: {output_index:02d}', flush=True)
+            print(f'{slide_label} processed: {slide_stem}', flush=True)
             mark_progress()
             continue
 
         inventory.layers = extract_animated_gifs(
             slide_shapes,
             OUTPUT_FOLDER,
-            output_index,
+            slide_stem,
             inventory.slide_width,
             inventory.slide_height,
         )
@@ -130,7 +133,7 @@ def write_inventory(pptx_path: Path, progress_callback: Callable[[int, int], Non
         removed_shape_ids_by_slide.append(animated_shape_ids)
         if animated_shape_ids:
             animated_layers = [layer for layer in inventory.layers if layer.type == 'gif']
-            has_background_animation = any(layer.source_file == f'{output_index:02d}_layer1.gif' for layer in inventory.layers)
+            has_background_animation = any(layer.source_file == f'{slide_stem}_layer1.gif' for layer in inventory.layers)
             if not has_background_animation:
                 layered_static_slide_indexes.add(output_index)
 
@@ -157,15 +160,15 @@ def write_inventory(pptx_path: Path, progress_callback: Callable[[int, int], Non
                     and int(shape.shape_id) not in upper_static_shape_ids
                 }
                 if base_static_shape_ids and not has_background_animation:
-                    static_layers.append((base_static_shape_ids, f'{output_index:02d}_layer1.png'))
+                    static_layers.append((base_static_shape_ids, f'{slide_stem}_layer1.png'))
                 static_layer_index = _next_layer_index(inventory.layers)
                 static_layers.append((
                     upper_static_shape_ids,
-                    f'{output_index:02d}_layer{static_layer_index}.png',
+                    f'{slide_stem}_layer{static_layer_index}.png',
                 ))
                 skipped_static_slide_indexes.add(output_index)
                 layered_static_slide_indexes.discard(output_index)
-        print(f'{slide_label} processed: {output_index:02d}', flush=True)
+        print(f'{slide_label} processed: {slide_stem}', flush=True)
         mark_progress()
 
     total_progress = (
@@ -181,6 +184,7 @@ def write_inventory(pptx_path: Path, progress_callback: Callable[[int, int], Non
         OUTPUT_FOLDER,
         len(inventories),
         removed_shape_ids_by_slide,
+        slide_stems,
         skipped_static_slide_indexes,
         layered_static_slide_indexes=layered_static_slide_indexes,
         transparent_static_layers_by_slide=transparent_static_layers_by_slide,

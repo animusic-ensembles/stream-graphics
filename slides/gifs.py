@@ -329,7 +329,7 @@ def _is_background_gif(placement: Placement) -> bool:
 def extract_animated_gifs(
         shapes: list[BaseShape],
         output_folder: Path,
-        slide_index: int,
+        slide_stem: str,
         slide_width: int,
         slide_height: int
 ) -> list[SlideLayer]:
@@ -360,7 +360,7 @@ def extract_animated_gifs(
 
     for z_index, shape, blob, placement, export_as_gif in animated_shapes:
         extension = 'gif' if export_as_gif else 'png'
-        full_canvas_filename = f'{slide_index:02d}_layer{layer_index}.{extension}'
+        full_canvas_filename = f'{slide_stem}_layer{layer_index}.{extension}'
         rotation = float(shape.rotation or 0.0)
         flip_h = _shape_transform_bool(shape, 'flipH')
         flip_v = _shape_transform_bool(shape, 'flipV')
