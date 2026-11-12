@@ -2,7 +2,7 @@
 
 Generate credit cards, lower-third section videos, and slide assets.
 
-Requires Python 3.11, 3.12, or 3.13.
+Requires Python 3.11, 3.12, 3.13, or 3.14.
 
 ## Windows
 
