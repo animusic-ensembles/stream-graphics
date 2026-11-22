@@ -31,7 +31,7 @@ def _next_layer_index(layers: Sequence[object]) -> int:
     layer_indexes = []
     for layer in layers:
         source_file = getattr(layer, 'source_file', '')
-        match = LAYER_FILENAME_PATTERN.match(str(source_file))
+        match = LAYER_FILENAME_PATTERN.search(str(source_file))
         if match:
             layer_indexes.append(int(match.group(1)))
     return (max(layer_indexes) + 1) if layer_indexes else 1
