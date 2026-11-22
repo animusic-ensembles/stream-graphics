@@ -3,6 +3,7 @@ from manim.constants import LEFT
 from manim.mobject.mobject import Mobject
 from manim.typing import Point3DLike
 from pathlib import Path
+import json
 import shutil
 import re
 from typing import Any, Callable, TypeVar, cast
@@ -77,6 +78,12 @@ def _copy_sections_to_output() -> None:
         destination = output_folder / destination_name
         if item.is_dir():
             shutil.copytree(item, destination, dirs_exist_ok=True)
+        elif item.suffix == '.json':
+            sections = json.loads(item.read_text(encoding='utf-8'))
+            for section in sections:
+                if section.get('video'):
+                    section['video'] = _section_output_name(Path(section['video']))
+            destination.write_text(json.dumps(sections, indent=4, ensure_ascii=False), encoding='utf-8')
         else:
             shutil.copy2(item, destination)
 
@@ -126,7 +133,7 @@ class LowerThird(Scene):
             title = Text(title_text, font=FONT_NAME, height=_abs_convert(60), fill_opacity=0).move_to(_convert(-80, 900-30), aligned_edge=LEFT)
 
         with register_font(str(LIGHT_FONT_PATH)):
-            subtitle = Text(subtitle_text, font=FONT_NAME, height=_abs_convert(40), fill_opacity=0).move_to(_convert(-80, 900+40), aligned_edge=LEFT)
+            subtitle = Text(subtitle_text, font=FONT_NAME, weight='LIGHT', height=_abs_convert(40), fill_opacity=0).move_to(_convert(-80, 900+40), aligned_edge=LEFT)
                 
         overlay = Rectangle(color=BLACK, height=_abs_convert(160), width=_abs_convert(100)).move_to(_convert(40, 900))
         overlay.set_fill(color=BLACK, opacity=1)
