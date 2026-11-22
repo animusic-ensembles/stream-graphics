@@ -133,7 +133,7 @@ def write_inventory(pptx_path: Path, progress_callback: Callable[[int, int], Non
         removed_shape_ids_by_slide.append(animated_shape_ids)
         if animated_shape_ids:
             animated_layers = [layer for layer in inventory.layers if layer.type == 'gif']
-            has_background_animation = any(layer.source_file == f'{slide_stem}_layer1.gif' for layer in inventory.layers)
+            has_background_animation = any(Path(layer.source_file).suffix.lower() == '.mp4' for layer in animated_layers)
             if not has_background_animation:
                 layered_static_slide_indexes.add(output_index)
 

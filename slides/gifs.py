@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Generator
 from hashlib import blake2b
 from io import BytesIO
+from math import gcd
 from pathlib import Path
 
 from PIL import Image, ImageEnhance, ImageFile, ImageSequence
@@ -10,12 +12,12 @@ from pptx.shapes.base import BaseShape
 
 from .inventory import OUTPUT_HEIGHT, OUTPUT_WIDTH
 from .models import Placement, SlideLayer
+from .mp4_export import save_background_mp4
 
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 OOXML_PERCENT = 100000
-BACKGROUND_GIF_COLORS = 192
 
 
 def _is_animated_gif(blob: bytes) -> bool:
@@ -175,60 +177,27 @@ def _source_frame_digest(frame: Image.Image) -> bytes:
     return digest.digest()
 
 
-def _rgba_to_gif_frame(frame: Image.Image, colors: int) -> Image.Image:
-    rgba = frame.convert('RGBA')
-    alpha = rgba.getchannel('A')
-    rgb = Image.new('RGB', rgba.size, (0, 0, 0))
-    rgb.paste(rgba.convert('RGB'), mask=alpha)
-
-    quantized = rgb.quantize(colors=colors, method=Image.Quantize.MEDIANCUT)
-    shifted = quantized.point(lambda index: index + 1)
-
-    palette = [0, 0, 0] + (quantized.getpalette() or [])[:765]
-    palette.extend([0] * (768 - len(palette)))
-    shifted.putpalette(palette)
-
-    transparent_mask = alpha.point(lambda value: 255 if value == 0 else 0)
-    shifted.paste(0, mask=transparent_mask)
-    shifted.info['transparency'] = 0
-    return shifted
-
-
 def _save_animation(
         frames: list[Image.Image],
         durations: list[int],
         output_path: Path,
         loop: int,
-        as_gif: bool,
 ) -> None:
-    if as_gif:
-        output_frames = [_rgba_to_gif_frame(frame, BACKGROUND_GIF_COLORS) for frame in frames]
-        output_frames[0].save(
-            output_path,
-            save_all=True,
-            append_images=output_frames[1:],
-            duration=durations,
-            loop=loop,
-            disposal=[2] * len(output_frames),
-            transparency=0,
-            optimize=True,
-        )
-    else:
-        frames[0].save(
-            output_path,
-            save_all=True,
-            append_images=frames[1:],
-            duration=durations,
-            loop=loop,
-            disposal=[2] * len(frames),
-            compress_level=1,
-            optimize=False,
-        )
+    frames[0].save(
+        output_path,
+        save_all=True,
+        append_images=frames[1:],
+        duration=durations,
+        loop=loop,
+        disposal=[2] * len(frames),
+        compress_level=1,
+        optimize=False,
+    )
 
     _validate_full_canvas_animation(output_path)
 
 
-def _render_full_canvas_animation(
+def _iter_full_canvas_frames(
         blob: bytes,
         output_path: Path,
         placement: Placement,
@@ -241,29 +210,28 @@ def _render_full_canvas_animation(
         contrast: float,
         saturation: float,
         grayscale: bool,
-        as_gif: bool,
-) -> None:
+) -> Generator[tuple[Image.Image, int], None, None]:
     width = max(1, placement.width)
     height = max(1, placement.height)
     rotation = rotation % 360
     center_x = placement.x + width / 2
     center_y = placement.y + height / 2
 
-    frames: list[Image.Image] = []
-    durations: list[int] = []
+    pending_frame: Image.Image | None = None
+    pending_duration = 0
+    rendered_frame_count = 0
     previous_source_digest: bytes | None = None
     previous_digest: bytes | None = None
     source_frame_count = 0
     with Image.open(BytesIO(blob)) as image:
         default_duration = int(image.info.get('duration', 100))
-        loop = int(image.info.get('loop', 0))
         source_frame_count = getattr(image, 'n_frames', 1)
         print(
             f'Rendering animated overlay {output_path.name}: '
             f'source {image.size[0]}x{image.size[1]}, placement {width}x{height}, crop {crop}.',
             flush=True,
         )
-        if source_frame_count >= 100 and not as_gif:
+        if source_frame_count >= 100 and output_path.suffix.lower() == '.png':
             print(
                 f'Rendering large APNG overlay {output_path.name}: '
                 f'{source_frame_count} frame(s) at {width}x{height}.',
@@ -273,8 +241,8 @@ def _render_full_canvas_animation(
         for source_frame in ImageSequence.Iterator(image):
             duration = max(10, int(source_frame.info.get('duration', default_duration)))
             source_digest = _source_frame_digest(source_frame)
-            if frames and source_digest == previous_source_digest:
-                durations[-1] += duration
+            if pending_frame is not None and source_digest == previous_source_digest:
+                pending_duration += duration
                 continue
 
             transformed = _transformed_frame(
@@ -295,28 +263,73 @@ def _render_full_canvas_animation(
             x = round(center_x - rotated_width / 2)
             y = round(center_y - rotated_height / 2)
             digest = _frame_digest(transformed, x, y)
-            if frames and digest == previous_digest:
-                durations[-1] += duration
+            if pending_frame is not None and digest == previous_digest:
+                pending_duration += duration
                 previous_source_digest = source_digest
                 continue
 
+            if pending_frame is not None:
+                yield pending_frame, pending_duration
             canvas = Image.new('RGBA', (OUTPUT_WIDTH, OUTPUT_HEIGHT), (0, 0, 0, 0))
             canvas.alpha_composite(transformed, (x, y))
-            frames.append(canvas)
-            durations.append(duration)
+            pending_frame = canvas
+            pending_duration = duration
+            rendered_frame_count += 1
             previous_source_digest = source_digest
             previous_digest = digest
 
-    if not frames:
+    if pending_frame is None:
         raise RuntimeError(f'{output_path.name} had no source GIF frames to render.')
-    if len(frames) < source_frame_count:
+    yield pending_frame, pending_duration
+    if rendered_frame_count < source_frame_count:
         print(
             f'Optimized animated overlay {output_path.name}: '
-            f'{source_frame_count} source frame(s) collapsed to {len(frames)} frame(s).',
+            f'{source_frame_count} source frame(s) collapsed to {rendered_frame_count} frame(s).',
             flush=True,
         )
 
-    _save_animation(frames, durations, output_path, loop, as_gif)
+
+def _render_full_canvas_animation(
+        blob: bytes,
+        output_path: Path,
+        placement: Placement,
+        rotation: float,
+        flip_h: bool,
+        flip_v: bool,
+        crop: tuple[float, float, float, float],
+        opacity: float,
+        brightness: float,
+        contrast: float,
+        saturation: float,
+        grayscale: bool,
+        as_mp4: bool,
+) -> None:
+    with Image.open(BytesIO(blob)) as image:
+        loop = int(image.info.get('loop', 0))
+        frame_duration_ms = 0
+        if as_mp4:
+            default_duration = int(image.info.get('duration', 100))
+            for frame in ImageSequence.Iterator(image):
+                duration = max(10, int(frame.info.get('duration', default_duration)))
+                frame_duration_ms = gcd(frame_duration_ms, duration)
+
+    rendered_frames = _iter_full_canvas_frames(
+        blob, output_path, placement, rotation, flip_h, flip_v, crop,
+        opacity, brightness, contrast, saturation, grayscale,
+    )
+    if as_mp4:
+        try:
+            save_background_mp4(rendered_frames, output_path, frame_duration_ms)
+        finally:
+            rendered_frames.close()
+        return
+
+    frames: list[Image.Image] = []
+    durations: list[int] = []
+    for frame, duration in rendered_frames:
+        frames.append(frame)
+        durations.append(duration)
+    _save_animation(frames, durations, output_path, loop)
 
 
 def _is_background_gif(placement: Placement) -> bool:
@@ -349,17 +362,17 @@ def extract_animated_gifs(
             continue
 
         placement = _placement(shape, slide_width, slide_height)
-        export_as_gif = _is_background_gif(placement)
-        animated_shapes.append((z_index, shape, blob, placement, export_as_gif))
+        export_as_mp4 = _is_background_gif(placement)
+        animated_shapes.append((z_index, shape, blob, placement, export_as_mp4))
 
     has_background_animation = any(
-        export_as_gif
-        for _z_index, _shape, _blob, _placement_value, export_as_gif in animated_shapes
+        export_as_mp4
+        for _z_index, _shape, _blob, _placement_value, export_as_mp4 in animated_shapes
     )
     layer_index = 1 if has_background_animation else 2
 
-    for z_index, shape, blob, placement, export_as_gif in animated_shapes:
-        extension = 'gif' if export_as_gif else 'png'
+    for z_index, shape, blob, placement, export_as_mp4 in animated_shapes:
+        extension = 'mp4' if export_as_mp4 else 'png'
         full_canvas_filename = f'{slide_stem}_layer{layer_index}.{extension}'
         rotation = float(shape.rotation or 0.0)
         flip_h = _shape_transform_bool(shape, 'flipH')
@@ -368,8 +381,12 @@ def extract_animated_gifs(
         opacity = _shape_opacity(shape)
         brightness, contrast = _shape_luminance(shape)
         saturation, grayscale = _shape_color_adjustments(shape)
-        if export_as_gif:
-            print(f'{full_canvas_filename}: background-sized animation detected; exporting as GIF.', flush=True)
+        if export_as_mp4:
+            print(
+                f'{full_canvas_filename}: background-sized animation detected; '
+                'exporting as H.264 MP4 with transparency composited over white.',
+                flush=True,
+            )
 
         _render_full_canvas_animation(
             blob,
@@ -384,7 +401,7 @@ def extract_animated_gifs(
             contrast,
             saturation,
             grayscale,
-            export_as_gif,
+            export_as_mp4,
         )
         layers.append(
             SlideLayer(
