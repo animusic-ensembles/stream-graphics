@@ -11,19 +11,18 @@ if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
 
     if [ "$OS_NAME" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
         echo "Installing Python with Homebrew..."
-        brew install python@3.13
-        if command -v python3.13 >/dev/null 2>&1; then
-            PYTHON_BIN="python3.13"
+        brew install python@3.14
+        if command -v python3.14 >/dev/null 2>&1; then
+            PYTHON_BIN="python3.14"
         fi
     else
-        echo "Please install Python 3.11, 3.12, or 3.13, then run this script again."
+        echo "Please install Python 3.11, 3.12, 3.13, or 3.14, then run this script again."
         exit 1
     fi
 fi
 
-if ! "$PYTHON_BIN" -c "import sys; raise SystemExit(0 if (3, 11) <= sys.version_info < (3, 14) else 1)"; then
-    echo "This project requires Python 3.11, 3.12, or 3.13."
-    echo "Python 3.14 is not supported by the pinned Pillow dependency."
+if ! "$PYTHON_BIN" -c "import sys; raise SystemExit(0 if (3, 11) <= sys.version_info < (3, 15) else 1)"; then
+    echo "This project requires Python 3.11, 3.12, 3.13, or 3.14."
     exit 1
 fi
 
